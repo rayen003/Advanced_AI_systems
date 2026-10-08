@@ -47,7 +47,11 @@ def same_origin():
 @app.get("/")
 def index():
     conversation()  # Set the session cookie before the first streamed response.
-    return send_from_directory(FRONTEND, "index.html")
+    # Vercel fixes file mtimes; same-size HTML can reuse an ETag across builds.
+    response = send_from_directory(FRONTEND, "index.html", conditional=False, etag=False)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers.pop("Last-Modified", None)
+    return response
 
 
 @app.post("/api/chat")

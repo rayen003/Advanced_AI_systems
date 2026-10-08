@@ -1,7 +1,9 @@
 """Offline API checks. No real model calls or order writes."""
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import server
@@ -88,6 +90,26 @@ class ServerTests(unittest.TestCase):
             response = self.client.get('/api/health')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json, {'ok': True, 'storage': 'local'})
+
+    def test_homepage_does_not_reuse_stale_bundle_html(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'index.html'
+            path.write_text('<p>old bundle</p>')
+            os.utime(path, (1540000000, 1540000000))
+            with patch.object(server, 'FRONTEND', Path(folder)):
+                first = self.client.get('/')
+                stale_tag = first.headers.get('ETag', '"previous-deployment"')
+                first.close()
+                path.write_text('<p>new bundle</p>')
+                os.utime(path, (1540000000, 1540000000))
+                second = self.client.get('/', headers={
+                    'If-None-Match': stale_tag,
+                    'If-Modified-Since': 'Sat, 20 Oct 2018 01:46:40 GMT'})
+                self.addCleanup(second.close)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.data, b'<p>new bundle</p>')
+        self.assertEqual(second.headers['Cache-Control'], 'no-store')
+        self.assertNotIn('ETag', second.headers)
 
     def test_busy_session_rejected(self):
         state = self.state()
