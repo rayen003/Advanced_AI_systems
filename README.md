@@ -1,8 +1,14 @@
 # Wine retail assistant
 
 A small course prototype: React UI, Python/Flask, the OpenAI client and SQLite.
-Each file has one job. The catalog contains 200 imported wines with provenance-aware flavour notes;
-orders are exported locally and are not sent to a real shop.
+The catalog now contains 200 wines imported from the teammate's
+[finewine repository](https://github.com/hecaiadvanced26/finewine), replacing the
+original four-wine demo. Flavour notes retain their stated/inferred provenance;
+taster and community ratings remain separate. Prices, stock and bottle sizes
+are simulated. Orders are exported locally and are not sent to a real shop.
+
+Hosted demo: [advanced-ai-systems.vercel.app](https://advanced-ai-systems.vercel.app).
+Its chat and inventory storage are temporary; see the limitations below.
 
 ## Run
 
@@ -78,8 +84,42 @@ ORDER BY price_cents LIMIT 5;
 ```
 
 `run_query(sql)` executes that SQL with SQLite and returns up to ten rows. The model
-uses the rows to answer the customer. SQLite errors return to the model for one
-correction attempt. Queries use a read-only connection and must start with SELECT.
+uses the rows to answer the customer. SQLite errors return to the model for
+correction within the turn's tool budget. Queries use a read-only connection and
+must start with `SELECT`. The prompt requests at most five recommendations.
+
+## Query execution: SQL tool, not a code sandbox
+
+The model receives the actual schema and field descriptions in `prompts.py`, then
+supplies SQL as the argument to `run_query`. `catalog.py` opens a SQLite connection
+with `mode=ro`, runs one statement through `sqlite3.execute`, returns rows, and
+closes the connection. Queries execute inside the Flask/Python process.
+
+We did not implement an isolated sandbox for model-generated Python or shell
+code. The model can call two predefined tools: `run_query` and `prepare_order`.
+It cannot execute arbitrary Python, launch shell commands, or invoke
+`submit_order`; confirmation and database writes belong to application code.
+The read-only SQLite connection is a database permission boundary, not a separate
+process/container sandbox.
+
+The teammate's agent uses structured `search_wines` filters and constructs SQL
+in Python. We imported its data, not its agent implementation. Our assistant
+retains model-written SQL so it can combine the documented columns and flavour
+tables without adding a separate search function for every preference.
+
+| Design choice | Current implementation | Trade-off |
+|---|---|---|
+| Database search | Model-generated `SELECT` executed by a predefined backend tool | Flexible queries, but correctness depends on the model and schema descriptions |
+| Code execution | No arbitrary Python/shell execution and no isolated code sandbox | Small implementation; SQL still runs in the application process |
+| Query restrictions | Read-only connection, `SELECT` prefix check, one statement, up to ten returned rows | No table allowlist, SQL cost limit, or query execution timeout |
+| Preference tracking | Recent messages rather than a dedicated preference object | Simple follow-ups, but constraints can be lost or misinterpreted |
+| Order submission | One-item draft plus an explicit UI/CLI confirmation | No multi-item checkout, payment, delivery, or real shop integration |
+
+A ten-row response cap limits returned data, not query work: a large scan or
+expensive join can still consume resources. The SQL tool is not restricted to
+catalog tables; other tables in the same database, including local order history,
+are readable. There is no database authorizer or per-customer row access policy.
+These are limits of this course prototype, not guarantees of production isolation.
 
 ## Imported teammate catalog
 
@@ -91,6 +131,19 @@ The repository omits the original `wines.json`; import uses its supplied SQLite
 instead. Source code is not executed. Existing source IDs and unknown vintages
 are preserved. Country codes `de` and `fr` normalize to Germany and France;
 original values remain in the JSON attributes.
+
+| Table | Imported fields and purpose |
+|---|---|
+| `wines` | Source ID, combined display name, producer, country, region, regional style, type, vintage, separate taster/community scores, review, and synthetic price/stock/bottle size |
+| `flavours` | Wine ID, flavour tag, and `stated` or `guess` provenance for each note |
+| `flavour_vocabulary` | 88 English/French terms with family and group labels for searches |
+| `catalog_metadata` | Imported source commit for traceability |
+| `orders` | Application-owned historical order payloads; teammate orders are not imported |
+
+The source keeps inventory in a separate table; our import folds it into `wines`
+to retain the existing order flow and converts euro prices to integer cents.
+The snapshot records the source URL, commit, and data caveats. It is not a live
+catalog feed: pulling the teammate's repository alone does not update this app.
 
 `wines` retains integer cents and stock for existing order code and adds explicit
 producer, origin, regional style, type, bottle size, taster rating, community rating
@@ -136,6 +189,43 @@ are optional: missing preferences mean no filter, and 'any'/'no limit' remove a
 constraint. A complete preference form or Pydantic model is not required. Stock and price
 always come from tools, not chat memory.
 
+There is no separate structured state for preferences, shortlist IDs, selected
+wine, or quantity. The model derives those from the last six complete user turns
+and their associated responses/tool results. `Memory` does retain that history
+and one pending draft, so the app is not completely stateless. A new chat message
+discards the pending draft; reset/reload clears conversation memory. There is no
+long-term customer profile or conversation recovery after a restart.
+
+Browser cookies carry a signed chat ID, not the conversation itself. Flask keeps
+the history and draft in a process-local dictionary, with a lock per conversation.
+That lock does not coordinate different Vercel instances. A stable
+`FLASK_SECRET_KEY` keeps cookies valid across instances but does not share their
+in-memory conversations.
+
+## Prototype limitations
+
+- **Data coverage:** sweetness/dryness, body, grapes, pairings and certifications
+  are not recorded. A wine name or inferred flavour is not evidence for these
+  properties. NULL vintages remain "unknown or non-vintage".
+- **Data provenance:** imported reviews and scores are not independently
+  verified. Of 483 flavour records, 350 are style guesses. Vocabulary labels
+  categorize terms; a family named "Faults" does not prove a wine has a defect.
+- **Model reliability:** prompt rules request grounding, stated-note matching
+  and permission before relaxing constraints, but do not mechanically validate
+  every SQL filter or sentence in the final reply. Model/tool errors remain possible.
+- **Bounded conversation:** each turn allows four model steps and six tool-call
+  attempts; later attempts can receive budget errors instead of executing. Only
+  six recent turns are retained, with no summary or durable preference state.
+- **Hosted persistence:** Vercel uses process memory for chats and `/tmp` SQLite
+  for inventory/orders. Restarts can reset them; different instances can have
+  different stock and missing drafts. Duplicate-order protection applies within
+  one database, not across independent instances.
+- **Shop scope:** one wine per draft, local JSON export, no customer account,
+  delivery, payment, email confirmation, or external order acceptance.
+
+A durable multi-user version would need shared inventory/order storage, a shared
+session store, customer access controls, and stronger query execution restrictions.
+
 ## Vercel demo deployment
 
 The linked Vercel project builds the React frontend into `public/` and runs
@@ -152,6 +242,11 @@ the deployment as a multi-user shop. No payment or real shop integration exists.
 
 Deploy with `vercel --prod`. To roll back, promote a previous working deployment
 from the Vercel project dashboard. Environment secrets remain outside Git.
+
+The homepage is served with `Cache-Control: no-store` and conditional file
+responses disabled. This avoids stale HTML referencing a removed JavaScript
+bundle when Vercel build files share the same timestamp and size. If a browser
+still shows an old blank page, perform a hard refresh once.
 
 ## Manual checks
 
