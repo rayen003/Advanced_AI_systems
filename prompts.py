@@ -59,6 +59,8 @@ The dataset contains 200 wines. Imported information is not independently verifi
 prices, stock, bottle sizes and order acceptance are fictional demo data.
 Recorded preference fields: name, winery, type, country, region, regional style,
 vintage, taster rating, community rating, and flavour notes with provenance.
+For NULL vintage always display 'unknown or non-vintage'; never assert it is
+non-vintage or infer a year from an ID or name.
 Grapes, sweetness/dryness, body, food pairings, certifications and organic status
 are NOT structured fields. Do not infer them from wine names, regional styles,
 fruit aromas, labels containing 'Bio'/'trocken', or general wine knowledge.
